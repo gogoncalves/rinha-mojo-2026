@@ -25,15 +25,15 @@ comptime BLOCK_BYTES: Int = PADDED_DIMS * LANES * 2
 comptime QUANT_SCALE: Float32 = 10000.0
 comptime QUANT_MAX: Float32 = 10000.0
 
-comptime NPROBE: Int = 1
-comptime REPAIR_EXTRA: Int = 23
+comptime NPROBE: Int = 2
+comptime REPAIR_EXTRA: Int = 30
 comptime MAX_PROBES: Int = NPROBE + REPAIR_EXTRA
 comptime MAX_K: Int = 4096
 comptime SEEN_WORDS: Int = (MAX_K + 63) // 64
 comptime TOP_K: Int = 5
 comptime REPAIR_MIN: UInt8 = 1
 comptime REPAIR_MAX_FRAUDS: UInt8 = 4
-comptime EARLY_DIST_FRAC: Int64 = 140
+comptime EARLY_DIST_FRAC: Int64 = 120
 
 comptime EARLY_DIST: Int64 = (
     (Int64(10000) * EARLY_DIST_FRAC // 1000)
