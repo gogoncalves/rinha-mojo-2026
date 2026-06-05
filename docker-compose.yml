@@ -1,9 +1,11 @@
 services:
   api1:
-    image: gugagoncalves/rinha-2026-mojo:v13
+    image: gugagoncalves/rinha-2026-mojo:v14
     platform: linux/amd64
     cpuset: "0"
     network_mode: "none"
+    logging:
+      driver: "none"
     ulimits:
       nofile:
         soft: 65535
@@ -18,8 +20,8 @@ services:
       EPOLL_BUSY_POLL_US: "100"
       EPOLL_BUSY_POLL_BUDGET: "8"
       EPOLL_PREFER_BUSY_POLL: "1"
-      API_WARMUP_MS: "5000"
-      API_WARMUP_ITERS: "8000"
+      API_WARMUP_MS: "30000"
+      API_WARMUP_ITERS: "60000"
     volumes:
       - sock:/sock
     deploy:
@@ -29,10 +31,12 @@ services:
           memory: "165MB"
 
   api2:
-    image: gugagoncalves/rinha-2026-mojo:v13
+    image: gugagoncalves/rinha-2026-mojo:v14
     platform: linux/amd64
     cpuset: "1"
     network_mode: "none"
+    logging:
+      driver: "none"
     ulimits:
       nofile:
         soft: 65535
@@ -47,8 +51,8 @@ services:
       EPOLL_BUSY_POLL_US: "100"
       EPOLL_BUSY_POLL_BUDGET: "8"
       EPOLL_PREFER_BUSY_POLL: "1"
-      API_WARMUP_MS: "5000"
-      API_WARMUP_ITERS: "8000"
+      API_WARMUP_MS: "30000"
+      API_WARMUP_ITERS: "60000"
     volumes:
       - sock:/sock
     deploy:
@@ -58,10 +62,12 @@ services:
           memory: "165MB"
 
   lb:
-    image: gugagoncalves/rinha-2026-mojo:v13
+    image: gugagoncalves/rinha-2026-mojo:v14
     platform: linux/amd64
     cpuset: "2,3"
     entrypoint: ["/lb"]
+    logging:
+      driver: "none"
     ulimits:
       nofile:
         soft: 65535

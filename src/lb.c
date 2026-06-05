@@ -40,6 +40,13 @@
 #ifndef SO_INCOMING_CPU
 #define SO_INCOMING_CPU 49
 #endif
+#ifndef TCP_FASTOPEN
+#define TCP_FASTOPEN 23
+#endif
+
+/* Branch-hint macros: only annotate paths with a clear bias. */
+#define likely(x)   __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
 /* EPIOCSPARAMS: epoll_busy_poll ioctl (Linux 6.9+). Magic = 0x40087001. */
 #ifndef EPIOCSPARAMS
 struct epoll_params_compat {
@@ -208,6 +215,15 @@ int main(int argc, char **argv) {
     int busy_us = 50;
     (void)setsockopt(lfd, SOL_SOCKET, SO_BUSY_POLL, &busy_us, sizeof(busy_us));
 
+    /* TCP_FASTOPEN: enable server-side TFO so clients that support it can
+     * stuff payload into the SYN and skip an RTT. Best-effort; ignored
+     * silently on kernels without TFO or when /proc/sys/net/ipv4/tcp_fastopen
+     * is disabled. Queue length 256 mirrors top-piassa-asm/lb.asm:188. */
+    {
+        int qlen = 256;
+        (void)setsockopt(lfd, IPPROTO_TCP, TCP_FASTOPEN, &qlen, sizeof(qlen));
+    }
+
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
@@ -230,7 +246,7 @@ int main(int argc, char **argv) {
         int accepted = 0;
         while (accepted < accept_batch) {
             int cfd = accept4(lfd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
-            if (cfd < 0) {
+            if (unlikely(cfd < 0)) {
                 if (errno == EINTR) continue;
                 break;
             }
@@ -248,7 +264,7 @@ int main(int argc, char **argv) {
                 char peek_buf[64];
                 ssize_t pn = recv(cfd, peek_buf, sizeof(peek_buf) - 1,
                                   MSG_PEEK | MSG_DONTWAIT);
-                if (pn >= 10 && memcmp(peek_buf, "GET /ready", 10) == 0) {
+                if (unlikely(pn >= 10 && memcmp(peek_buf, "GET /ready", 10) == 0)) {
                     static const char ready_resp[] =
                         "HTTP/1.1 200 OK\r\n"
                         "Content-Length: 2\r\n"
@@ -263,7 +279,7 @@ int main(int argc, char **argv) {
 
             int target = rr;
             rr = (rr + 1) % nb;
-            if (send_fd(&backends[target], cfd) != 0) {
+            if (unlikely(send_fd(&backends[target], cfd) != 0)) {
                 /* retry on another backend, then fall back to blocking */
                 int sent = 0;
                 for (int k = 1; k < nb && !sent; k++) {

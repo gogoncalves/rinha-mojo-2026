@@ -9,7 +9,7 @@ API binary.
 
 from std.memory import UnsafePointer, memcpy
 from std.os import getenv
-from index_bin import open_index, Index, libc_close, libc_exit, die, libc_malloc, libc_free, score
+from index_bin import open_index, Index, libc_close, libc_exit, die, libc_malloc, libc_free, libc_madvise, score
 from normalize import DIMS
 from http_io import (
     parse_request,
@@ -166,6 +166,10 @@ def libc_epoll_wait(
 @extern("mlockall")
 def libc_mlockall(flags: Int32) abi("c") -> Int32:
     ...
+
+
+comptime MADV_HUGEPAGE: Int32 = 14
+comptime MADV_WILLNEED: Int32 = 3
 
 
 @extern("clock_gettime")
@@ -434,7 +438,15 @@ struct State:
 
     def __init__(out self):
         comptime CONN_SIZE: Int = 8224
-        var raw_conns = libc_malloc(MAX_CONNS * CONN_SIZE)
+        var conns_bytes: Int = MAX_CONNS * CONN_SIZE
+        var raw_conns = libc_malloc(conns_bytes)
+        # v14: hint THP for the ~8 MiB per-conn state region (mirrors
+        # top-piassa-asm/asm/server.asm:1801-1808 for its 4.2 MiB
+        # conn_state arena). Same call already used at module scope for
+        # the IVF index mmap (index_bin.mojo:203), so the symbol path
+        # is known-safe. Best-effort: kernel may decline if THP off.
+        _ = libc_madvise(raw_conns, conns_bytes, MADV_HUGEPAGE)
+        _ = libc_madvise(raw_conns, conns_bytes, MADV_WILLNEED)
         self.conns = raw_conns.bitcast[Conn]()
         for i in range(MAX_CONNS):
             (self.conns + i).init_pointee_move(Conn())
@@ -830,10 +842,13 @@ def main() raises:
             st.epfd, events_raw, Int32(128), Int32(0)
         )
         if n == 0:
-            # Phase 2: bounded busy spin while recently active.
+            # Phase 2: bounded busy spin while recently active. v14 mirrors
+            # top-bmtec api.c wait_events (line 219+) — no sched_yield, the
+            # cpuset gives us this core exclusively, so yielding only burns
+            # a syscall + risks the scheduler parking us. Tight loop of
+            # epoll_wait(timeout=0) + now_us() until spin budget expires.
             var spin_until = last_event_us + spin_us
             while now_us() < spin_until:
-                _ = libc_sched_yield()
                 n = libc_epoll_wait(
                     st.epfd, events_raw, Int32(128), Int32(0)
                 )
