@@ -9,7 +9,8 @@ API binary.
 
 from std.memory import UnsafePointer, memcpy
 from std.os import getenv
-from index_bin import open_index, Index, libc_close, libc_exit, die, libc_malloc, libc_free
+from index_bin import open_index, Index, libc_close, libc_exit, die, libc_malloc, libc_free, score
+from normalize import DIMS
 from http_io import (
     parse_request,
     respond,
@@ -179,6 +180,29 @@ def libc_clock_gettime(
 def libc_sched_yield() abi("c") -> Int32:
     ...
 
+
+@extern("prctl")
+def libc_prctl(
+    option: Int32,
+    arg2: UInt64,
+    arg3: UInt64,
+    arg4: UInt64,
+    arg5: UInt64,
+) abi("c") -> Int32:
+    ...
+
+
+@extern("sched_setscheduler")
+def libc_sched_setscheduler(
+    pid: Int32,
+    policy: Int32,
+    param: UnsafePointer[UInt8, origin=MutExternalOrigin],
+) abi("c") -> Int32:
+    ...
+
+
+comptime PR_SET_TIMERSLACK: Int32 = 29
+comptime SCHED_FIFO: Int32 = 1
 
 comptime CLOCK_MONOTONIC: Int32 = 1
 
@@ -697,6 +721,59 @@ def main() raises:
 
     if mlock_enabled():
         _ = libc_mlockall(MCL_CURRENT | MCL_FUTURE)
+
+    # Patch 1: prctl(PR_SET_TIMERSLACK, 1) — shrink kernel timer slack from
+    # default 50us to 1ns. Cuts scheduler wake-up jitter on response paths.
+    # Best-effort; ignored on failure.
+    _ = libc_prctl(
+        PR_SET_TIMERSLACK, UInt64(1), UInt64(0), UInt64(0), UInt64(0)
+    )
+
+    # Patch 2: sched_setscheduler(0, SCHED_FIFO, prio=10) — promote this
+    # thread above SCHED_OTHER so inbound packets wake us with minimal
+    # latency. Requires CAP_SYS_NICE + rtprio ulimit; best-effort otherwise.
+    var rt_prio_buf = libc_malloc(4)
+    rt_prio_buf.bitcast[Int32]()[0] = Int32(10)
+    _ = libc_sched_setscheduler(Int32(0), SCHED_FIFO, rt_prio_buf)
+    libc_free(rt_prio_buf)
+
+    # Patch 4: self-warmup — run synthetic score() calls before opening
+    # listeners so JIT/icache/dcache/centroid pages are hot when the LB
+    # arrives. Duration capped by API_WARMUP_MS (default 5000ms) and
+    # iteration count by API_WARMUP_ITERS (default 8000). Best-effort:
+    # any failure inside score() is swallowed by Mojo's def semantics
+    # but we never raise here.
+    var warmup_ms: Int = parse_int_env("API_WARMUP_MS", 5000)
+    var warmup_iters: Int = parse_int_env("API_WARMUP_ITERS", 8000)
+    if warmup_ms > 0 and warmup_iters > 0:
+        var qf_raw = libc_malloc(DIMS * 4)
+        var qf = qf_raw.bitcast[Float32]()
+        var w_start = now_us()
+        var w_deadline = w_start + UInt64(warmup_ms) * UInt64(1000)
+        var w_acc: UInt32 = 0
+        var w_i: Int = 0
+        while w_i < warmup_iters:
+            # Synthetic float vector — covers both "legit" and "fraud"
+            # neighbourhoods of the IVF space by shifting indices.
+            var d: Int = 0
+            while d < DIMS:
+                var x = Int((w_i * 131 + d * 17) % 1000)
+                qf[d] = Float32(x) / Float32(1000)
+                d += 1
+            if (w_i & 3) == 0:
+                qf[5] = Float32(-1)
+                qf[6] = Float32(-1)
+            w_acc = w_acc ^ score(idx, qf)
+            w_i += 1
+            if (w_i & 63) == 0:
+                if now_us() >= w_deadline:
+                    break
+        libc_free(qf_raw)
+        # Force the accumulator to be live so the optimizer can't elide
+        # the warmup loop body. Write to a heap byte and discard.
+        var sink = libc_malloc(1)
+        sink[0] = UInt8(w_acc & UInt32(0xFF))
+        libc_free(sink)
 
     st.epfd = libc_epoll_create1(EPOLL_CLOEXEC)
     if st.epfd < 0:

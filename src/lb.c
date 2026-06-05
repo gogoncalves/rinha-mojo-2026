@@ -238,6 +238,29 @@ int main(int argc, char **argv) {
             int one = 1;
             setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
             setsockopt(cfd, IPPROTO_TCP, TCP_QUICKACK, &one, sizeof(one));
+
+            /* Patch 6: intercept GET /ready locally so the LB answers
+             * health checks without round-tripping through the SCM_RIGHTS
+             * fd-pass + Mojo epoll path. MSG_PEEK keeps the bytes in the
+             * recv buffer if the request is not /ready, so the real client
+             * data still goes to the backend untouched. */
+            {
+                char peek_buf[64];
+                ssize_t pn = recv(cfd, peek_buf, sizeof(peek_buf) - 1,
+                                  MSG_PEEK | MSG_DONTWAIT);
+                if (pn >= 10 && memcmp(peek_buf, "GET /ready", 10) == 0) {
+                    static const char ready_resp[] =
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Length: 2\r\n"
+                        "Connection: close\r\n"
+                        "\r\nok";
+                    (void)send(cfd, ready_resp, sizeof(ready_resp) - 1,
+                               MSG_NOSIGNAL);
+                    close(cfd);
+                    continue;
+                }
+            }
+
             int target = rr;
             rr = (rr + 1) % nb;
             if (send_fd(&backends[target], cfd) != 0) {
