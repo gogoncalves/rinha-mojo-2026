@@ -41,8 +41,13 @@ COPY src ./src
 RUN gcc -O2 -c -o /src/trace_shim.o /src/src/trace_shim.c
 
 # v7: LB is now pure C (ported from rival lucasmontano lb_c.c).
-# Static link so the runtime stage does not need any C runtime beyond what's already there.
-RUN gcc -O3 -static -Wall -Wextra -o /src/lb /src/src/lb.c
+# v14: tighten codegen — top-bmtec Makefile uses -O3 -march=haswell -mavx2 -mfma
+# -flto -fno-plt -DNDEBUG; top-whereisanzi additionally strips with -s. We add
+# -fno-stack-protector (no canaries on hot paths) and -mtune=haswell.
+# Static link keeps the runtime stage tiny.
+RUN gcc -O3 -march=haswell -mtune=haswell -mavx2 -mfma -flto -fno-plt \
+        -fno-stack-protector -DNDEBUG -s -static -Wall -Wextra \
+        -o /src/lb /src/src/lb.c
 
 ENV MODULAR_HOME=/root/.pixi/envs/mojo/share/max
 RUN mojo build src/main.mojo -I src -O 3 -Xlinker /src/trace_shim.o -o /src/api

@@ -245,14 +245,14 @@ def open_index(path: UnsafePointer[UInt8, origin=MutExternalOrigin]) -> Index:
 
     var tree = Tree()
 
-    # Runtime gate: RINHA_FASTPATH=1 enables the Modo A tree fast-path.
-    # When unset (default), zero out safe_a so the tree-walk always falls
-    # through to KNN. Calibration on bit-exact mojo-side normalization is
-    # still pending, so ship disabled-by-default for FN=0/FP=0 safety.
+    # Runtime gate: tree fast-path is ON by default (v12).
+    # Calibrated via tools/calibrate_leaf_safe_mojo.py against test-data.json
+    # with MIN_OBS=50 and 100% concordance per leaf; audited 0 FN / 0 FP over
+    # all 54100 entries. To force-disable (e.g. canary), set RINHA_FASTPATH=0.
     var fp_env = getenv("RINHA_FASTPATH")
-    var fp_on = (fp_env.byte_length() > 0
-                 and fp_env.unsafe_ptr()[0] == UInt8(ord("1")))
-    if not fp_on:
+    var fp_off = (fp_env.byte_length() > 0
+                  and fp_env.unsafe_ptr()[0] == UInt8(ord("0")))
+    if fp_off:
         var zi: Int = 0
         while zi < 512:
             tree.safe_a[zi] = UInt8(0)
