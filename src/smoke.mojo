@@ -33,11 +33,20 @@ comptime DIMS: Int = 14
 comptime PADDED_DIMS: Int = 16
 
 
+def _pair_madd(d: SIMD[DType.int16, 16]) -> SIMD[DType.int64, LANES]:
+    var d32 = d.cast[DType.int32]()
+    var sq = d32 * d32
+    var pair = SIMD[DType.int32, LANES](0)
+    comptime for lane in range(LANES):
+        pair[lane] = sq[lane * 2] + sq[lane * 2 + 1]
+    return pair.cast[DType.int64]()
+
+
 def blk_dist(
     vectors: UnsafePointer[Int16, origin=MutExternalOrigin],
     q: UnsafePointer[Int16, origin=MutExternalOrigin],
 ) -> SIMD[DType.int64, 8]:
-    """One IVF block (8 lanes) distance, pair-packed."""
+    """One IVF block (8 lanes) distance, pair-packed (v11 madd path)."""
     var acc = SIMD[DType.int64, LANES](0)
 
     comptime for p in range(7):
@@ -49,13 +58,7 @@ def blk_dist(
         var base = vectors + p * LANES * 2
         var block_v = base.load[width=16]()
         var d = q_pair - block_v
-        var pa = SIMD[DType.int64, LANES](0)
-
-        comptime for lane in range(LANES):
-            var a: Int64 = Int64(d[lane * 2])
-            var b: Int64 = Int64(d[lane * 2 + 1])
-            pa[lane] = a * a + b * b
-        acc = acc + pa
+        acc = acc + _pair_madd(d)
     return acc
 
 

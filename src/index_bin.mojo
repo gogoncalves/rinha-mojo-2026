@@ -21,6 +21,7 @@ Layout (replicates Zig v31 index format, version=4, magic=0x52494E48):
 
 from std.memory import UnsafePointer
 from std.os import getenv
+from std.sys.intrinsics import prefetch, PrefetchOptions
 from knn import (
     LANES,
     PADDED_DIMS,
@@ -289,7 +290,30 @@ def scan_cluster(
 
     var blk = start_block
     var processed: Int = 0
+    # Prefetch the first few blocks before we start the scan so the loads
+    # in blk_dist_prune hit L1 instead of stalling on DRAM. PADDED_DIMS *
+    # LANES * 2 = 256 bytes per block = 4 cache lines, so we prefetch each
+    # one. Ahead-of-loop priming lets us continue prefetching inside the
+    # loop with a small lookahead.
+    comptime PRE: Int = 4
+    var pre_blk = start_block
+    while pre_blk < end_block and pre_blk < start_block + PRE:
+        var pf_base = idx.vectors_base + pre_blk * PADDED_DIMS * LANES
+        var pf_u8 = pf_base.bitcast[UInt8]()
+        prefetch[PrefetchOptions().for_read().high_locality().to_data_cache()](pf_u8)
+        prefetch[PrefetchOptions().for_read().high_locality().to_data_cache()](pf_u8 + 64)
+        prefetch[PrefetchOptions().for_read().high_locality().to_data_cache()](pf_u8 + 128)
+        prefetch[PrefetchOptions().for_read().high_locality().to_data_cache()](pf_u8 + 192)
+        pre_blk += 1
     while blk < end_block:
+        # Prefetch block (blk + PRE) so its data is in flight before we
+        # need it. distance.c in top-bmtec uses _mm_prefetch ahead=4.
+        if blk + PRE < end_block:
+            var pf_base = idx.vectors_base + (blk + PRE) * PADDED_DIMS * LANES
+            var pf_u8 = pf_base.bitcast[UInt8]()
+            prefetch[PrefetchOptions().for_read().high_locality().to_data_cache()](pf_u8)
+            prefetch[PrefetchOptions().for_read().high_locality().to_data_cache()](pf_u8 + 128)
+
         var threshold = best_d[TOP_K - 1]
         var pr = blk_dist_prune(idx.vectors_base, blk, q, threshold)
         var dists = pr[0]
