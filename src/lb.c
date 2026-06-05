@@ -24,12 +24,32 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/epoll.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
+
+/* SO_BUSY_POLL is in <asm/socket.h> on some headers, fall back. */
+#ifndef SO_BUSY_POLL
+#define SO_BUSY_POLL 46
+#endif
+#ifndef SO_INCOMING_CPU
+#define SO_INCOMING_CPU 49
+#endif
+/* EPIOCSPARAMS: epoll_busy_poll ioctl (Linux 6.9+). Magic = 0x40087001. */
+#ifndef EPIOCSPARAMS
+struct epoll_params_compat {
+    unsigned int busy_poll_usecs;
+    unsigned short busy_poll_budget;
+    unsigned char prefer_busy_poll;
+    unsigned char pad;
+};
+#define EPIOCSPARAMS _IOW('@', 1, struct epoll_params_compat)
+#endif
 
 #define MAX_BACKENDS 32
 #define DEFAULT_ACCEPT_BATCH 128
@@ -182,6 +202,11 @@ int main(int argc, char **argv) {
     setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
     setsockopt(lfd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on));
     setsockopt(lfd, IPPROTO_TCP, TCP_DEFER_ACCEPT, &on, sizeof(on));
+    /* SO_BUSY_POLL: tell the kernel to spin in the NAPI poll loop for up
+     * to N usecs before parking, cutting accept latency on small-RPS
+     * bursts (top-piassa uses 50us). Best-effort, ignored on old kernels. */
+    int busy_us = 50;
+    (void)setsockopt(lfd, SOL_SOCKET, SO_BUSY_POLL, &busy_us, sizeof(busy_us));
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
